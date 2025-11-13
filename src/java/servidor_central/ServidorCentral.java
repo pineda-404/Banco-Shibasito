@@ -167,6 +167,9 @@ public class ServidorCentral {
                 case "CONSULTAR_HISTORIAL":
                     response = handleConsultarHistorial(req);
                     break;
+                case "TRANSFERIR_INTERBANCARIA":
+                    response = handleTransferenciaInterbancaria(req);
+                    break;
                 default:
                     response = new JSONObject().put("status", "ERROR").put("error", "Tipo desconocido: " + type).toString();
             }
@@ -567,6 +570,117 @@ public class ServidorCentral {
         System.out.println("[PARTITION] Cuenta " + account + " -> Partición " + partition);
         return partition;
     }
+
+    private String handleTransferenciaInterbancaria(JSONObject req) {
+    try {
+        String bancoDestino = req.getString("banco_destino");
+        int cuentaOrigen = req.getInt("cuenta_origen");
+        String cuentaDestino = req.getString("cuenta_destino");
+        double monto = req.getDouble("monto");
+        String txId = UUID.randomUUID().toString();
+
+        System.out.println("[INTERBANCARIA] Transferencia a " + bancoDestino + 
+                         ": " + cuentaOrigen + " -> " + cuentaDestino + " ($" + monto + ")");
+
+        // 1. Debitar de Shibasito
+        try (Connection conn = DriverManager.getConnection(DB_URL, DB_USER, DB_PASSWORD)) {
+            conn.setAutoCommit(false);
+            
+            try {
+                // Verificar saldo
+                PreparedStatement checkPs = conn.prepareStatement(
+                    "SELECT saldo FROM Cuentas WHERE id_cuenta = ? FOR UPDATE"
+                );
+                checkPs.setInt(1, cuentaOrigen);
+                ResultSet rs = checkPs.executeQuery();
+                
+                if (!rs.next()) {
+                    conn.rollback();
+                    return new JSONObject()
+                        .put("status", "ERROR")
+                        .put("error", "Cuenta origen no encontrada")
+                        .toString();
+                }
+                
+                double saldoActual = rs.getDouble("saldo");
+                if (saldoActual < monto) {
+                    conn.rollback();
+                    return new JSONObject()
+                        .put("status", "ERROR")
+                        .put("error", "Saldo insuficiente")
+                        .toString();
+                }
+                
+                // Debitar
+                PreparedStatement debitPs = conn.prepareStatement(
+                    "UPDATE Cuentas SET saldo = saldo - ? WHERE id_cuenta = ?"
+                );
+                debitPs.setDouble(1, monto);
+                debitPs.setInt(2, cuentaOrigen);
+                debitPs.executeUpdate();
+                
+                // Registrar transacción
+                PreparedStatement txPs = conn.prepareStatement(
+                    "INSERT INTO Transacciones (id_cuenta, tipo, monto) VALUES (?, ?, ?)"
+                );
+                txPs.setInt(1, cuentaOrigen);
+                txPs.setString(2, "DEBITO_INTERBANCARIO");
+                txPs.setDouble(3, monto);
+                txPs.executeUpdate();
+                
+                conn.commit();
+                System.out.println("[INTERBANCARIA] ✓ Débito exitoso en Shibasito");
+                
+            } catch (Exception e) {
+                conn.rollback();
+                throw e;
+            }
+        }
+
+        // 2. Notificar a Yapesito
+        JSONObject yapesitoMsg = new JSONObject()
+            .put("type", "CREDITO_INTERBANCARIO")
+            .put("cuenta_destino", cuentaDestino)
+            .put("monto", monto)
+            .put("tx_id", txId)
+            .put("banco_origen", "SHIBASITO");
+
+        String yapesitoResponse = callRpc("", "yapesito_queue", yapesitoMsg.toString());
+        JSONObject yapesitoResult = new JSONObject(yapesitoResponse);
+
+        if (!"OK".equals(yapesitoResult.optString("status"))) {
+            // Revertir débito si Yapesito falla
+            System.err.println("[INTERBANCARIA] ✗ Yapesito rechazó. Revirtiendo...");
+            try (Connection conn = DriverManager.getConnection(DB_URL, DB_USER, DB_PASSWORD)) {
+                PreparedStatement revertPs = conn.prepareStatement(
+                    "UPDATE Cuentas SET saldo = saldo + ? WHERE id_cuenta = ?"
+                );
+                revertPs.setDouble(1, monto);
+                revertPs.setInt(2, cuentaOrigen);
+                revertPs.executeUpdate();
+            }
+            return new JSONObject()
+                .put("status", "ERROR")
+                .put("error", "Yapesito rechazó la transferencia")
+                .toString();
+        }
+
+        System.out.println("[INTERBANCARIA] ✓ Transferencia interbancaria completada");
+        return new JSONObject()
+            .put("status", "OK")
+            .put("message", "Transferencia interbancaria exitosa")
+            .put("tx_id", txId)
+            .toString();
+
+    } catch (Exception e) {
+        System.err.println("[INTERBANCARIA] Error: " + e.getMessage());
+        e.printStackTrace();
+        return new JSONObject()
+            .put("status", "ERROR")
+            .put("error", "Error en transferencia interbancaria: " + e.getMessage())
+            .toString();
+    }
+}
 
     public static void main(String[] args) throws Exception {
         System.out.println("========================================");

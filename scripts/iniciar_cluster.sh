@@ -84,12 +84,28 @@ RENIEC_PID=$!
 sleep 2
 
 # Verificar que RENIEC arrancó
-if ! ps -p $RENIEC_PID >/dev/null 2>&1; then
-    echo "✗ ERROR: ReniecWorker falló al iniciar"
-    echo "  Revisa el log: logs/reniec_worker.log"
+    if ! ps -p $RENIEC_PID >/dev/null 2>&1; then
+        echo "✗ ERROR: ReniecWorker falló al iniciar"
+        echo "  Revisa el log: logs/reniec_worker.log"
+        exit 1
+    fi
+    echo "     ✓ ReniecWorker iniciado (PID: $RENIEC_PID)"
+
+# Servidor Yapesito
+echo "  -> Iniciando ServidorYapesito... (log en logs/servidor_yapesito.log)"
+"$VENV_PYTHON" src/python/yapesito/servidor_yapesito.py \
+    >"$LOGS_DIR/servidor_yapesito.log" 2>&1 &
+YAPESITO_PID=$!
+
+sleep 2
+
+# Verificar que Yapesito arrancó
+if ! ps -p $YAPESITO_PID >/dev/null 2>&1; then
+    echo "✗ ERROR: ServidorYapesito falló al iniciar"
+    echo "  Revisa el log: logs/servidor_yapesito.log"
     exit 1
 fi
-echo "     ✓ ReniecWorker iniciado (PID: $RENIEC_PID)"
+echo "     ✓ ServidorYapesito iniciado (PID: $YAPESITO_PID)"
 
 # Workers Java
 for i in 0 1; do
@@ -143,6 +159,7 @@ echo "=========================================="
 echo "Servicios activos:"
 echo "  ✓ ServidorCentral"
 echo "  ✓ ReniecWorker"
+echo "  ✓ ServidorYapesito"
 echo "  ✓ 4 NodosWorker (2 Java, 2 Python)"
 echo "  ✓ ClienteProxy (puerto 9876)"
 echo ""
