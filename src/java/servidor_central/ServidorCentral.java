@@ -83,6 +83,9 @@ public class ServidorCentral {
         this.rabbitChannel.queueDeclare(RENIEC_QUEUE, true, false, false, null);
         System.out.println("  ✓ Cola de RENIEC declarada: " + RENIEC_QUEUE);
         
+        this.rabbitChannel.queueDeclare("shibasito_interbancaria_queue", true, false, false, null);
+        System.out.println("  ✓ Cola interbancaria declarada: shibasito_interbancaria_queue");
+        
         System.out.println("✓ RabbitMQ inicializado correctamente");
         System.out.println("Servidor Central esperando mensajes de clientes en la cola: " + CLIENT_REQUEST_QUEUE);
     }
@@ -135,6 +138,13 @@ public class ServidorCentral {
             pool.submit(() -> handleMessage(delivery));
         };
         rabbitChannel.basicConsume(CLIENT_REQUEST_QUEUE, true, deliverCallback, consumerTag -> {});
+
+        // Escuchar cola interbancaria (créditos desde Yapesito)
+        DeliverCallback interbancarioCallback = (consumerTag, delivery) -> {
+            pool.submit(() -> handleCreditoInterbancario(delivery));
+        };
+        rabbitChannel.basicConsume("shibasito_interbancaria_queue", true, interbancarioCallback, consumerTag -> {});
+        System.out.println("[ServidorCentral] ✓ Escuchando cola interbancaria");
     }
 
     private void handleMessage(Delivery delivery) {
@@ -680,10 +690,61 @@ public class ServidorCentral {
             .put("error", "Error en transferencia interbancaria: " + e.getMessage())
             .toString();
     }
+    }
+
+    private void handleCreditoInterbancario(Delivery delivery) {
+    try {
+        String message = new String(delivery.getBody(), StandardCharsets.UTF_8);
+        System.out.println("\n[INTERBANCARIA-IN] >>> Crédito desde banco externo: " + message);
+        
+        JSONObject req = new JSONObject(message);
+        int cuentaDestino = req.getInt("cuenta_destino");
+        double monto = req.getDouble("monto");
+        String bancoOrigen = req.optString("banco_origen", "DESCONOCIDO");
+        
+        try (Connection conn = DriverManager.getConnection(DB_URL, DB_USER, DB_PASSWORD)) {
+            // Verificar cuenta existe
+            PreparedStatement checkPs = conn.prepareStatement("SELECT id_cuenta FROM Cuentas WHERE id_cuenta = ?");
+            checkPs.setInt(1, cuentaDestino);
+            ResultSet rs = checkPs.executeQuery();
+            
+            if (!rs.next()) {
+                System.err.println("[INTERBANCARIA-IN] ✗ Cuenta no encontrada: " + cuentaDestino);
+                return;
+            }
+            
+            // Acreditar
+            PreparedStatement creditPs = conn.prepareStatement(
+                "UPDATE Cuentas SET saldo = saldo + ? WHERE id_cuenta = ?"
+            );
+            creditPs.setDouble(1, monto);
+            creditPs.setInt(2, cuentaDestino);
+            creditPs.executeUpdate();
+            
+            // Registrar transacción
+            PreparedStatement txPs = conn.prepareStatement(
+                "INSERT INTO Transacciones (id_cuenta, tipo, monto) VALUES (?, ?, ?)"
+            );
+            txPs.setInt(1, cuentaDestino);
+            txPs.setString(2, "CREDITO_INTERBANCARIO");
+            txPs.setDouble(3, monto);
+            txPs.executeUpdate();
+            
+            System.out.println("[INTERBANCARIA-IN] ✓ Crédito aplicado: cuenta " + cuentaDestino + 
+                             " +S/ " + monto + " desde " + bancoOrigen);
+            
+        } catch (Exception e) {
+            System.err.println("[INTERBANCARIA-IN] ✗ Error en BD: " + e.getMessage());
+            e.printStackTrace();
+        }
+        
+    } catch (Exception e) {
+        System.err.println("[INTERBANCARIA-IN] ✗ Error procesando mensaje: " + e.getMessage());
+        e.printStackTrace();
+    }
 }
 
-    public static void main(String[] args) throws Exception {
-        System.out.println("========================================");
+    public static void main(String[] args) throws Exception {        System.out.println("========================================");
         System.out.println("   SERVIDOR CENTRAL - BANCO SHIBASITO");
         System.out.println("========================================");
         

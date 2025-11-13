@@ -82,6 +82,8 @@ class ServidorYapesito:
                 response_data = self._handle_credito_interbancario(req)
             elif req_type == "CONSULTAR_HISTORIAL":
                 response_data = self._handle_historial(req)
+            elif req_type == "TRANSFERIR_INTERBANCARIA":
+                response_data = self._handle_transferir_a_shibasito(req)
             else:
                 response_data = {"status": "ERROR", "error": "TIPO_DESCONOCIDO"}
 
@@ -272,6 +274,65 @@ class ServidorYapesito:
                 print(f"[Yapesito] Error en crédito interbancario: {e}")
                 return {"status": "ERROR", "error": str(e)}
 
+    def _handle_transferir_a_shibasito(self, req):
+        """Envía dinero desde Yapesito a Shibasito"""
+        cuenta_origen = req.get("cuenta_origen")  # YAP-XXXX
+        cuenta_destino = req.get("cuenta_destino")  # Número Shibasito
+        monto = req.get("monto")
+        
+        if not all([cuenta_origen, cuenta_destino, monto]):
+            return {"status": "ERROR", "error": "Datos incompletos"}
+        
+        monto = float(monto)
+        cuenta_destino = int(cuenta_destino)  # Shibasito usa int
+        
+        with self.db_lock:
+            try:
+                with sqlite3.connect(self.db_path) as conn:
+                    cursor = conn.cursor()
+                    
+                    # 1. Verificar saldo en Yapesito
+                    cursor.execute("SELECT saldo FROM Cuentas WHERE id_cuenta = ?", (cuenta_origen,))
+                    row = cursor.fetchone()
+                    if not row or row[0] < monto:
+                        return {"status": "ERROR", "error": "Saldo insuficiente"}
+                    
+                    # 2. Debitar de Yapesito
+                    cursor.execute(
+                        "UPDATE Cuentas SET saldo = saldo - ? WHERE id_cuenta = ?",
+                        (monto, cuenta_origen)
+                    )
+                    cursor.execute(
+                        "INSERT INTO Transacciones (id_cuenta, tipo, monto, referencia) VALUES (?, ?, ?, ?)",
+                        (cuenta_origen, "DEBITO_INTERBANCARIO", monto, f"A Shibasito cuenta {cuenta_destino}")
+                    )
+                    
+                    conn.commit()
+                    print(f"[Yapesito] ✓ Débito exitoso: {cuenta_origen} -S/ {monto}")
+                    
+                # 3. Notificar a Shibasito (sin esperar respuesta)
+                msg_shibasito = json.dumps({
+                    "type": "CREDITO_INTERBANCARIO",
+                    "cuenta_destino": cuenta_destino,
+                    "monto": monto,
+                    "banco_origen": "YAPESITO"
+                })
+                
+                self.channel.basic_publish(
+                    exchange='',
+                    routing_key='shibasito_interbancaria_queue',
+                    body=msg_shibasito.encode('utf-8')
+                )
+                
+                print(f"[Yapesito] ✓ Notificación enviada a Shibasito cuenta {cuenta_destino}")
+                return {"status": "OK", "message": "Transferencia interbancaria exitosa"}
+                
+            except Exception as e:
+                print(f"[Yapesito] Error en transferencia interbancaria: {e}")
+                import traceback
+                traceback.print_exc()
+                return {"status": "ERROR", "error": str(e)}
+
     def _handle_historial(self, req):
         """Consulta historial de transacciones"""
         cuenta = req.get("account")
@@ -321,7 +382,7 @@ class ServidorYapesito:
             queue=YAPESITO_QUEUE, on_message_callback=self.on_message
         )
         try:
-            print("[Yapesito] ✓ Servidor iniciado. Esperando mensajes...")
+            print("[Yapesito] ✓ Servidor iniciado. Esperando mensajes...", flush=True)
             self.channel.start_consuming()
         except KeyboardInterrupt:
             self.connection.close()

@@ -123,7 +123,7 @@ class ClienteYapesito:
     def transferir_shibasito(self):
         """Transferir a cuenta Shibasito (interbancaria)"""
         print("\n--- Transferencia a Shibasito (Interbancaria) ---")
-        cuenta_destino = input("Cuenta Shibasito (número): ").strip()
+        cuenta_destino = input("Cuenta Shibasito (número, ej: 1001): ").strip()
         monto = input("Monto: ").strip()
 
         if not cuenta_destino or not monto:
@@ -131,7 +131,9 @@ class ClienteYapesito:
             return
 
         try:
+            cuenta_destino = int(cuenta_destino)
             monto = float(monto)
+            
             if monto <= 0:
                 print("✗ Monto debe ser positivo")
                 return
@@ -141,13 +143,23 @@ class ClienteYapesito:
                 print("Operación cancelada")
                 return
 
-            # Aquí se debería implementar el flujo interbancario inverso
-            # Por ahora, solo transferencia Shibasito -> Yapesito está implementada
-            print("⚠️  Transferencia Yapesito -> Shibasito aún no implementada")
-            print("   (Solo funciona: Shibasito -> Yapesito)")
+            response = self.rpc_client.call(
+                {
+                    "type": "TRANSFERIR_INTERBANCARIA",
+                    "cuenta_origen": self.cuenta_actual,
+                    "cuenta_destino": cuenta_destino,
+                    "monto": monto,
+                },
+                routing_key="yapesito_queue"
+            )
+
+            if response.get("status") == "OK":
+                print(f"✓ Transferencia interbancaria exitosa")
+            else:
+                print(f"✗ Error: {response.get('error')}")
 
         except ValueError:
-            print("✗ Monto inválido")
+            print("✗ Datos inválidos")
         except Exception as e:
             print(f"✗ Error: {e}")
 

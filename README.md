@@ -1,15 +1,17 @@
-# Sistema Bancario Shibasito
+# Sistema Bancario Shibasito + Yapesito
 
-Sistema bancario distribuido con arquitectura de microservicios usando RabbitMQ, implementando protocolo 2PC para transacciones atómicas.
+Sistema bancario distribuido con arquitectura de microservicios usando RabbitMQ, implementando protocolo 2PC para transacciones atómicas y transferencias interbancarias.
 
 ## Arquitectura
 
-- **Backend:** Java (ServidorCentral, NodoWorker) + Python (ReniecWorker, NodoWorker)
+- **Backend:** Java (ServidorCentral, NodoWorker) + Python (ReniecWorker, NodoWorker, ServidorYapesito)
 - **Middleware:** RabbitMQ (patrón RPC)
 - **Base de Datos:**
-  - PostgreSQL: BD1_banco (Cuentas, Transacciones, Préstamos)
-  - SQLite: BD2_reniec (Personas)
+  - PostgreSQL: BD1_banco (Cuentas, Transacciones, Préstamos) - Shibasito
+  - SQLite: BD2_reniec (Personas) - RENIEC
+  - SQLite: BD_yapesito (Cuentas, Transacciones) - Yapesito
 - **Cliente Desktop:** Python/Tkinter con generación de códigos QR de cobro
+- **Cliente Terminal:** Cliente Yapesito para operaciones interbancarias
 - **Distribución:** 2 particiones con 4 nodos workers
 
 ## Requisitos
@@ -72,12 +74,9 @@ docker run -d --name postgres-db \
 docker ps
 ```
 
-### 5. Crear y poblar base de datos
+### 5. Crear y poblar bases de datos
 
-#### BD1 (Banco - PostgreSQL):
-
-Primero, creamos la base de datos vacía en el contenedor. Luego, cargamos el
-schema y los datos desde nuestro script SQL local.
+#### BD1 (Banco Shibasito - PostgreSQL):
 
 ```bash
 # 1. Crear la base de datos vacía
@@ -89,15 +88,33 @@ cat scripts_bd/bd1_banco.sql | docker exec -i postgres-db psql -U postgres -d bd
 
 #### BD2 (RENIEC - SQLite):
 
-Creamos la base de datos de RENIEC ejecutando el script .sql, lo cual
-generará el archivo `db_reniec/reniec.db`.
-
 ```bash
 # Crear la BD de RENIEC desde el dump
 sqlite3 db_reniec/reniec.db < scripts_bd/bd2_reniec.sql
 ```
 
-### 6. Iniciar el sistema completo
+#### BD3 (Banco Yapesito - SQLite):
+
+```bash
+# Crear directorio y base de datos
+mkdir -p src/python/yapesito
+sqlite3 src/python/yapesito/db_yapesito.db < scripts_bd/bd_yapesito.sql
+
+# Verificar creación
+sqlite3 src/python/yapesito/db_yapesito.db "SELECT id_cuenta, nombre_cliente, saldo FROM Cuentas;"
+```
+
+**Salida esperada:**
+
+```
+YAP-5001|CARLOS ALBERTO RAMÍREZ SOTO|3500.0
+YAP-5002|JOSÉ MIGUEL TORRES VEGA|2200.0
+YAP-5003|LUCÍA PATRICIA MENDOZA DÍAZ|4100.0
+YAP-5004|MIGUEL ÁNGEL CASTILLO ROJAS|1800.0
+YAP-5005|ANDREA SOFÍA VARGAS LUNA|5300.0
+```
+
+### 6. Iniciar el sistema Shibasito
 
 ```bash
 ./scripts/iniciar_cluster.sh
@@ -113,13 +130,42 @@ sqlite3 db_reniec/reniec.db < scripts_bd/bd2_reniec.sql
 ✓ ClienteProxy iniciado (puerto 9876)
 ```
 
-### 7. Ejecutar cliente GUI
+### 7. Iniciar servidor Yapesito (terminal separada)
+
+```bash
+python3 src/python/yapesito/servidor_yapesito.py
+```
+
+**Salida esperada:**
+
+```
+==================================================
+    SERVIDOR YAPESITO - BANCO SIMPLE
+==================================================
+[Yapesito] ✓ Conectado exitosamente a RabbitMQ
+[Yapesito] ✓ Escuchando en cola 'yapesito_queue'
+[Yapesito] ✓ Servidor iniciado. Esperando mensajes...
+```
+
+### 8. Ejecutar clientes
+
+#### Cliente GUI Shibasito:
 
 ```bash
 python src/python/cliente_desktop/cliente_gui.py
 ```
 
+#### Cliente Terminal Yapesito:
+
+```bash
+python3 src/python/yapesito/cliente_yapesito.py
+```
+
+---
+
 ## Credenciales de Prueba
+
+### Banco Shibasito:
 
 | DNI        | Cuenta | Saldo Inicial | Nombre                      |
 | ---------- | ------ | ------------- | --------------------------- |
@@ -127,324 +173,53 @@ python src/python/cliente_desktop/cliente_gui.py
 | `78901234` | `1002` | S/ 1,500.50   | JUAN CARLOS RAMÍREZ QUISPE  |
 | `12345678` | `8008` | S/ 5,100.00   | LUIS ALBERTO TORRES MENDOZA |
 
-## Funcionalidades
+### Banco Yapesito:
 
-### Cliente Desktop (GUI):
+| DNI        | Cuenta     | Saldo Inicial | Nombre                      |
+| ---------- | ---------- | ------------- | --------------------------- |
+| `87654321` | `YAP-5001` | S/ 3,500.00   | CARLOS ALBERTO RAMÍREZ SOTO |
+| `98765432` | `YAP-5002` | S/ 2,200.00   | JOSÉ MIGUEL TORRES VEGA     |
+| `23456789` | `YAP-5003` | S/ 4,100.00   | LUCÍA PATRICIA MENDOZA DÍAZ |
 
-- **Login:** Validación con DNI + Cuenta (verificado contra RENIEC)
-- **Consultar Saldo:** Visualización en tiempo real
-- **Transferencias:** Entre cuentas con protocolo 2PC
-- **Préstamos:** Solicitud con validación de identidad
-- **Historial:** Consulta de transacciones
-- **Códigos QR:** Generación de QR de cobro para app móvil
+---
 
-### Backend:
+## Transferencias Interbancarias
 
-- **Protocolo 2PC:** Transacciones atómicas distribuidas
-- **Particionamiento:** Distribución de cuentas en 2 particiones
-- **Alta disponibilidad:** 2 réplicas por partición
-- **Validación RENIEC:** Autenticación contra base de datos ciudadanos
+### 🔄 Transferencia: Shibasito → Yapesito
 
-## Tests
+#### **Paso 1: Ver saldos iniciales**
+
+**Shibasito (cuenta 1001):**
 
 ```bash
-# Test completo de mapeo y 2PC
-python test_mapeo.py
-
-# Test de login y operaciones básicas
-python test_login.py
+docker exec postgres-db psql -U postgres -d bd1_banco -c \
+  "SELECT id_cuenta, nombre_cliente, saldo FROM Cuentas WHERE id_cuenta = 1001;"
 ```
 
 **Salida esperada:**
 
 ```
-✓ Cuenta 1001 | Partición 1 | Saldo: $ 2400.00
-✓ Transferencia completada exitosamente
-✓ Préstamo aprobado y registrado
+ id_cuenta |    nombre_cliente         | saldo
+-----------+---------------------------+--------
+      1001 | MARÍA ELENA GARCÍA FLORES | 2400.00
 ```
 
-## Código QR (Para App Móvil)
-
-La GUI genera códigos QR de **cobro** con el siguiente formato:
-
-```json
-{
-  "tipo": "COBRO",
-  "subtipo": "COBRO_TRANSFERENCIA",
-  "cuenta_cobrador": 1001,
-  "dni_cobrador": "45678912",
-  "nombre_cobrador": "MARÍA ELENA GARCÍA FLORES",
-  "monto": 100.0,
-  "concepto": "Pago por servicio",
-  "timestamp": "2025-11-04T20:45:00",
-  "banco": "Shibasito",
-  "qr_id": "QR-1001-1730762700"
-}
-```
-
-### Flujo del QR:
-
-1.  Usuario Desktop genera QR de cobro
-2.  Usuario Móvil escanea el QR
-3.  App móvil muestra: "Pagar S/ X a [Nombre]"
-4.  Usuario confirma y se ejecuta la transferencia
-5.  Ambos saldos se actualizan
-
-**Ver:** `INSTRUCCIONES_APP_MOVIL.md` para integración con app Kotlin/Android.
-
-## Detener Sistema
+**Yapesito (cuenta YAP-5001):**
 
 ```bash
-./scripts/detener_cluster.sh
+sqlite3 src/python/yapesito/db_yapesito.db \
+  "SELECT id_cuenta, nombre_cliente, saldo FROM Cuentas WHERE id_cuenta = 'YAP-5001';"
 ```
 
-Esto detendrá:
-
-- ServidorCentral
-- Todos los NodosWorker (Java y Python)
-- ReniecWorker
-- ClienteProxy
-
-**Nota:** RabbitMQ y PostgreSQL seguirán corriendo en Docker.
-
-## Arquitectura Técnica
-
-### Componentes:
+**Salida esperada:**
 
 ```
-┌─────────────────┐
-│  Cliente GUI    │ (Puerto local)
-│  (Tkinter)      │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│  ClienteProxy   │ (Puerto 9876)
-│  (TCP Server)   │
-└────────┬────────┘
-         │
-         ▼
-┌─────────────────┐
-│    RabbitMQ     │ (Puerto 5672)
-│   (RPC Pattern) │
-└────┬──────┬─────┘
-     │      │
-     ▼      ▼
-┌─────────┐ ┌──────────────┐
-│Servidor │ │ ReniecWorker │
-│Central  │ │  (SQLite)    │
-└────┬────┘ └──────────────┘
-     │
-     ▼
-┌────────────────────────┐
-│    4 NodosWorker       │
-│  Partición 0: Java 0,1 │
-│  Partición 1: Py 2,3   │
-└───────┬────────────────┘
-        │
-        ▼
-┌─────────────────┐
-│   PostgreSQL    │
-│   (bd1_banco)   │
-└─────────────────┘
+YAP-5001|CARLOS ALBERTO RAMÍREZ SOTO|3500.0
 ```
 
-### Distribución de Cuentas:
+#### **Paso 2: Ejecutar transferencia**
 
-```python
-particion = id_cuenta % 2
-# Cuenta 1001 → Partición 1 (Nodos 2, 3)
-# Cuenta 1002 → Partición 0 (Nodos 0, 1)
-```
-
-## Documentación
-
-- **`documentacion/`**: Documentación técnica completa
-- **`diagramas/`**: Diagramas de arquitectura y protocolos
-- **`INSTRUCCIONES_APP_MOVIL.md`**: Guía para integración móvil
-- **`recapitulacion.md`**: Historial de desarrollo y solución de problemas
-
-## Solución de Problemas
-
-### Error: "RabbitMQ no está disponible"
-
-```bash
-# Verificar estado
-docker ps | grep rabbitmq
-
-# Iniciar si está detenido
-docker start rabbitmq-server
-```
-
-### Error: "Connection refused al proxy"
-
-```bash
-# Verificar que el proxy esté escuchando
-lsof -i :9876
-
-# Ver logs
-tail -f logs/cliente_proxy.log
-```
-
-### Error: "Timeout en operaciones"
-
-```bash
-# Verificar todos los servicios
-ps aux | grep -E "(servidor_central|nodo_worker|reniec_worker)"
-
-# Ver logs de errores
-grep ERROR logs/*.log
-```
-
-## Estructura del Proyecto
-
-```
-PC3/
-├── src/
-│   ├── java/
-│   │   ├── servidor_central/ServidorCentral.java
-│   │   └── nodo_trabajador/NodoWorker.java
-│   └── python/
-│       ├── cliente_desktop/
-│       │   ├── cliente_gui.py        # GUI principal
-│       │   └── cliente_proxy.py      # Proxy TCP
-│       ├── common/
-│       │   ├── rpc_client.py         # Cliente RPC
-│       │   └── proxy_client.py       # Cliente del proxy
-│       ├── nodo_reniec/reniec_worker.py
-│       └── nodo_trabajador/nodo_worker.py
-├── scripts/
-│   ├── iniciar_cluster.sh
-│   ├── detener_cluster.sh
-│   └── test_mapeo.py
-├── config/
-│   └── nodos_config.json
-├── lib/                      # JARs de Java
-├── scripts_bd/
-│   ├── bd1_banco.sql
-│   └── bd2_reniec.sql
-└── README.md
-```
-
-## Equipo
-
-- **[Tu Nombre]** - Backend Java/Python, Sistema Distribuido
-- **[Compañero]** - App Móvil Kotlin/Android
-
-## Licencia
-
-Proyecto académico - Universidad Nacional de Ingeniería (UNI)
-CC4P1 Programación Concurrente y Distribuida - 2025-II
-
----
-
-## Características Destacadas
-
-- **Protocolo 2PC completo** para transacciones distribuidas
-- **Validación con RENIEC** para autenticación
-- **Particionamiento automático** de datos
-- **Códigos QR** para integración móvil
-- **Manejo robusto de errores** en todos los componentes
-- **Logs detallados** para debugging
-- **GUI moderna** con Tkinter
-
----
-
-## Instrucciones para Probar Yapesito
-
-### **Paso 1: Crear la Base de Datos**
-
-```bash
-# Crear directorio
-mkdir -p src/python/yapesito
-
-# Crear la BD con el schema
-sqlite3 src/python/yapesito/db_yapesito.db < scripts_bd/bd_yapesito.sql
-
-# Verificar que se creó correctamente
-sqlite3 src/python/yapesito/db_yapesito.db "SELECT * FROM Cuentas;"
-```
-
-Deberías ver 5 cuentas (YAP-5001 a YAP-5005).
-
----
-
-### **Paso 2: Iniciar el Servidor Yapesito**
-
-```bash
-# Terminal 1: Servidor Yapesito
-python3 src/python/yapesito/servidor_yapesito.py
-```
-
-Deberías ver:
-
-```
-==================================================
-    SERVIDOR YAPESITO - BANCO SIMPLE
-==================================================
-[Yapesito] Intento 1/5 de conexión a RabbitMQ...
-[Yapesito] ✓ Conectado exitosamente a RabbitMQ
-[Yapesito] ✓ Escuchando en cola 'yapesito_queue'
-[Yapesito] ✓ Servidor iniciado. Esperando mensajes...
-```
-
----
-
-### **Paso 3: Probar Cliente Yapesito**
-
-```bash
-# Terminal 2: Cliente Yapesito
-python3 src/python/yapesito/cliente_yapesito.py
-```
-
-**Login:**
-
-- DNI: `87654321`
-- Cuenta: `YAP-5001`
-
-**Prueba las opciones:**
-
-1. Consultar saldo → Debe mostrar S/ 3,500.00
-2. Transferir a Yapesito → Prueba enviar S/ 100 a `YAP-5002`
-3. Ver historial
-
----
-
-### **Paso 4: Probar Transferencia Interbancaria (Shibasito → Yapesito)**
-
-#### **4.1 Recompilar Shibasito con los cambios**
-
-```bash
-cd src/java/servidor_central
-javac -cp ".:lib/*" -d bin ServidorCentral.java
-```
-
-#### **4.2 Reiniciar el cluster de Shibasito**
-
-```bash
-./scripts/detener_cluster.sh
-./scripts/iniciar_cluster.sh
-```
-
-#### **4.3 Desde la GUI de Shibasito**
-
-1. Login con cuenta Shibasito (ej: DNI `45678912`, Cuenta `1001`)
-2. Ir a "Transferir Dinero"
-3. **Cuenta destino:** `YAP-5001` (importante: texto, no número)
-4. **Monto:** `150`
-5. Confirmar
-
-**PROBLEMA:** La GUI actual solo acepta cuentas numéricas. Necesitamos un pequeño ajuste.
-
----
-
-### **Paso 5: Crear Script de Prueba para Interbancaria**
-
-Crea este archivo temporal para probar:
-
-```bash
-# test_interbancaria.py
-```
+Crear archivo `test_interbancaria_shibasito_yapesito.py`:
 
 ```python
 #!/usr/bin/env python3
@@ -458,18 +233,29 @@ def test_interbancaria():
     client = RpcClient()
     client.connect()
 
-    print("=== TEST: Transferencia Interbancaria ===")
-    print("Shibasito (1001) → Yapesito (YAP-5001)")
+    print("=" * 60)
+    print("  TEST: Transferencia Interbancaria")
+    print("  Shibasito (1001) → Yapesito (YAP-5001)")
+    print("  Monto: S/ 250.00")
+    print("=" * 60)
 
     response = client.call({
         "type": "TRANSFERIR_INTERBANCARIA",
         "banco_destino": "YAPESITO",
         "cuenta_origen": 1001,
         "cuenta_destino": "YAP-5001",
-        "monto": 150.0
+        "monto": 250.0
     })
 
-    print(f"\nRespuesta: {response}")
+    print(f"\n✓ Respuesta del servidor:")
+    print(f"  Status: {response.get('status')}")
+    print(f"  Mensaje: {response.get('message', 'N/A')}")
+
+    if response.get('status') == 'OK':
+        print("\n✓ Transferencia interbancaria exitosa")
+    else:
+        print(f"\n✗ Error: {response.get('error')}")
+
     client.close()
 
 if __name__ == "__main__":
@@ -479,55 +265,373 @@ if __name__ == "__main__":
 **Ejecutar:**
 
 ```bash
-python3 test_interbancaria.py
+python3 test_interbancaria_shibasito_yapesito.py
+```
+
+**Salida esperada:**
+
+```
+============================================================
+  TEST: Transferencia Interbancaria
+  Shibasito (1001) → Yapesito (YAP-5001)
+  Monto: S/ 250.00
+============================================================
+
+✓ Respuesta del servidor:
+  Status: OK
+  Mensaje: Transferencia interbancaria exitosa
+
+✓ Transferencia interbancaria exitosa
+```
+
+#### **Paso 3: Verificar saldos finales**
+
+**Shibasito (debe haber disminuido en S/ 250):**
+
+```bash
+docker exec postgres-db psql -U postgres -d bd1_banco -c \
+  "SELECT id_cuenta, nombre_cliente, saldo FROM Cuentas WHERE id_cuenta = 1001;"
+```
+
+**Salida esperada:**
+
+```
+ id_cuenta |    nombre_cliente         | saldo
+-----------+---------------------------+--------
+      1001 | MARÍA ELENA GARCÍA FLORES | 2150.00  ← Antes: 2400.00
+```
+
+**Yapesito (debe haber aumentado en S/ 250):**
+
+```bash
+sqlite3 src/python/yapesito/db_yapesito.db \
+  "SELECT id_cuenta, nombre_cliente, saldo FROM Cuentas WHERE id_cuenta = 'YAP-5001';"
+```
+
+**Salida esperada:**
+
+```
+YAP-5001|CARLOS ALBERTO RAMÍREZ SOTO|3750.0  ← Antes: 3500.0
+```
+
+#### **Paso 4: Ver historial de transacciones**
+
+**Transacción de débito en Shibasito:**
+
+```bash
+docker exec postgres-db psql -U postgres -d bd1_banco -c \
+  "SELECT id_transaccion, tipo, monto, fecha FROM Transacciones WHERE id_cuenta = 1001 ORDER BY fecha DESC LIMIT 3;"
+```
+
+**Salida esperada:**
+
+```
+ id_transaccion |          tipo           |  monto  |            fecha
+----------------+-------------------------+---------+----------------------------
+            123 | DEBITO_INTERBANCARIO    |  250.00 | 2025-11-13 22:15:30.123456
+            122 | CREDITO                 |  500.00 | 2025-11-13 21:30:00
+            121 | DEBITO                  |  100.00 | 2025-11-13 20:00:00
+```
+
+**Transacción de crédito en Yapesito:**
+
+```bash
+sqlite3 src/python/yapesito/db_yapesito.db \
+  "SELECT id_transaccion, tipo, monto, fecha, referencia FROM Transacciones WHERE id_cuenta = 'YAP-5001' ORDER BY fecha DESC LIMIT 3;"
+```
+
+**Salida esperada:**
+
+```
+15|CREDITO_INTERBANCARIO|250.0|2025-11-13 22:15:31|Desde SHIBASITO TX:abc-123-def
+14|CREDITO|500.0|2025-11-13 21:00:00|Transferencia recibida
+13|DEBITO|100.0|2025-11-13 20:30:00|Pago de servicio
 ```
 
 ---
 
-### **Paso 6: Verificar Resultados**
+### 🔄 Transferencia: Yapesito → Shibasito
 
-#### **En Shibasito (PostgreSQL):**
+#### **Paso 1: Ver saldos iniciales**
 
-```bash
-docker exec postgres-db psql -U postgres -d bd1_banco -c "SELECT id_cuenta, saldo FROM Cuentas WHERE id_cuenta = 1001;"
-```
-
-El saldo debe haber **disminuido** en S/ 150.
-
-#### **En Yapesito (SQLite):**
+**Yapesito (cuenta YAP-5002):**
 
 ```bash
-sqlite3 src/python/yapesito/db_yapesito.db "SELECT id_cuenta, saldo FROM Cuentas WHERE id_cuenta = 'YAP-5001';"
+sqlite3 src/python/yapesito/db_yapesito.db \
+  "SELECT id_cuenta, nombre_cliente, saldo FROM Cuentas WHERE id_cuenta = 'YAP-5002';"
 ```
 
-El saldo debe haber **aumentado** en S/ 150.
+**Salida esperada:**
 
-#### **Ver transacciones en Yapesito:**
+```
+YAP-5002|JOSÉ MIGUEL TORRES VEGA|2200.0
+```
+
+**Shibasito (cuenta 8008):**
 
 ```bash
-sqlite3 src/python/yapesito/db_yapesito.db "SELECT * FROM Transacciones WHERE id_cuenta = 'YAP-5001' ORDER BY fecha DESC LIMIT 3;"
+docker exec postgres-db psql -U postgres -d bd1_banco -c \
+  "SELECT id_cuenta, nombre_cliente, saldo FROM Cuentas WHERE id_cuenta = 8008;"
 ```
 
-Debe aparecer una transacción tipo `CREDITO_INTERBANCARIO`.
+**Salida esperada:**
+
+```
+ id_cuenta |      nombre_cliente       |  saldo
+-----------+---------------------------+---------
+      8008 | LUIS ALBERTO TORRES MENDOZA| 5100.00
+```
+
+#### **Paso 2: Ejecutar transferencia desde cliente Yapesito**
+
+```bash
+python3 src/python/yapesito/cliente_yapesito.py
+```
+
+**En el menú:**
+
+1. Login con:
+   - DNI: `98765432`
+   - Cuenta: `YAP-5002`
+
+2. Seleccionar opción `3` (Transferir a Shibasito)
+
+3. Ingresar:
+   - Cuenta Shibasito: `8008`
+   - Monto: `150`
+
+4. Confirmar con `s`
+
+**Salida esperada:**
+
+```
+--- Transferencia a Shibasito (Interbancaria) ---
+Cuenta Shibasito (número, ej: 1001): 8008
+Monto: 150
+¿Transferir S/ 150.00 a Shibasito cuenta 8008? (s/n): s
+✓ Transferencia interbancaria exitosa
+```
+
+#### **Paso 3: Verificar saldos finales**
+
+**Yapesito (debe haber disminuido en S/ 150):**
+
+```bash
+sqlite3 src/python/yapesito/db_yapesito.db \
+  "SELECT id_cuenta, nombre_cliente, saldo FROM Cuentas WHERE id_cuenta = 'YAP-5002';"
+```
+
+**Salida esperada:**
+
+```
+YAP-5002|JOSÉ MIGUEL TORRES VEGA|2050.0  ← Antes: 2200.0
+```
+
+**Shibasito (debe haber aumentado en S/ 150):**
+
+```bash
+docker exec postgres-db psql -U postgres -d bd1_banco -c \
+  "SELECT id_cuenta, nombre_cliente, saldo FROM Cuentas WHERE id_cuenta = 8008;"
+```
+
+**Salida esperada:**
+
+```
+ id_cuenta |      nombre_cliente        |  saldo
+-----------+----------------------------+---------
+      8008 | LUIS ALBERTO TORRES MENDOZA | 5250.00  ← Antes: 5100.00
+```
+
+#### **Paso 4: Ver historial de transacciones**
+
+**Transacción de débito en Yapesito:**
+
+```bash
+sqlite3 src/python/yapesito/db_yapesito.db \
+  "SELECT id_transaccion, tipo, monto, fecha, referencia FROM Transacciones WHERE id_cuenta = 'YAP-5002' ORDER BY fecha DESC LIMIT 3;"
+```
+
+**Salida esperada:**
+
+```
+18|DEBITO_INTERBANCARIO|150.0|2025-11-13 22:30:45|A Shibasito cuenta 8008
+17|CREDITO|300.0|2025-11-13 21:00:00|Transferencia recibida
+16|DEBITO|50.0|2025-11-13 20:15:00|Pago de servicio
+```
+
+**Transacción de crédito en Shibasito:**
+
+```bash
+docker exec postgres-db psql -U postgres -d bd1_banco -c \
+  "SELECT id_transaccion, tipo, monto, fecha FROM Transacciones WHERE id_cuenta = 8008 ORDER BY fecha DESC LIMIT 3;"
+```
+
+**Salida esperada:**
+
+```
+ id_transaccion |          tipo           |  monto  |            fecha
+----------------+-------------------------+---------+----------------------------
+            145 | CREDITO_INTERBANCARIO   |  150.00 | 2025-11-13 22:30:46.789012
+            144 | CREDITO                 |  200.00 | 2025-11-13 21:45:00
+            143 | DEBITO                  |   75.00 | 2025-11-13 20:30:00
+```
 
 ---
 
-## Resumen de Archivos Creados
+## Resumen de Comandos Útiles
+
+### Ver todos los saldos actuales:
+
+**Shibasito:**
+
+```bash
+docker exec postgres-db psql -U postgres -d bd1_banco -c \
+  "SELECT id_cuenta, nombre_cliente, saldo FROM Cuentas ORDER BY id_cuenta;"
+```
+
+**Yapesito:**
+
+```bash
+sqlite3 src/python/yapesito/db_yapesito.db \
+  "SELECT id_cuenta, nombre_cliente, saldo FROM Cuentas ORDER BY id_cuenta;"
+```
+
+### Ver últimas 10 transacciones:
+
+**Shibasito:**
+
+```bash
+docker exec postgres-db psql -U postgres -d bd1_banco -c \
+  "SELECT t.id_transaccion, c.nombre_cliente, t.tipo, t.monto, t.fecha FROM Transacciones t JOIN Cuentas c ON t.id_cuenta = c.id_cuenta ORDER BY t.fecha DESC LIMIT 10;"
+```
+
+**Yapesito:**
+
+```bash
+sqlite3 src/python/yapesito/db_yapesito.db \
+  "SELECT t.id_transaccion, c.nombre_cliente, t.tipo, t.monto, t.fecha FROM Transacciones t JOIN Cuentas c ON t.id_cuenta = c.id_cuenta ORDER BY t.fecha DESC LIMIT 10;"
+```
+
+### Ver solo transacciones interbancarias:
+
+**Shibasito:**
+
+```bash
+docker exec postgres-db psql -U postgres -d bd1_banco -c \
+  "SELECT * FROM Transacciones WHERE tipo LIKE '%INTERBANCARIO%' ORDER BY fecha DESC;"
+```
+
+**Yapesito:**
+
+```bash
+sqlite3 src/python/yapesito/db_yapesito.db \
+  "SELECT * FROM Transacciones WHERE tipo LIKE '%INTERBANCARIO%' ORDER BY fecha DESC;"
+```
+
+---
+
+## Funcionalidades
+
+### Cliente Desktop Shibasito (GUI):
+
+- **Login:** Validación con DNI + Cuenta (verificado contra RENIEC)
+- **Consultar Saldo:** Visualización en tiempo real
+- **Transferencias:** Entre cuentas Shibasito con protocolo 2PC
+- **Transferencias Interbancarias:** A cuentas Yapesito (YAP-XXXX)
+- **Préstamos:** Solicitud con validación de identidad
+- **Historial:** Consulta de transacciones
+- **Códigos QR:** Generación de QR de cobro para app móvil
+
+### Cliente Terminal Yapesito:
+
+- **Login:** Autenticación con DNI + Cuenta Yapesito
+- **Consultar Saldo:** Saldo actual de la cuenta
+- **Transferencias Yapesito:** Entre cuentas del mismo banco
+- **Transferencias Interbancarias:** A cuentas Shibasito (numéricas)
+- **Historial:** Ver últimas transacciones
+
+### Backend:
+
+- **Protocolo 2PC:** Transacciones atómicas distribuidas
+- **Transferencias Interbancarias Bidireccionales:** Shibasito ↔ Yapesito
+- **Particionamiento:** Distribución de cuentas en 2 particiones
+- **Alta disponibilidad:** 2 réplicas por partición
+- **Validación RENIEC:** Autenticación contra base de datos ciudadanos
+
+---
+
+## Detener Sistema
+
+```bash
+# Detener Shibasito
+./scripts/detener_cluster.sh
+
+# Detener Yapesito (Ctrl+C en terminal del servidor)
+
+# Detener Docker (opcional)
+docker stop rabbitmq-server postgres-db
+```
+
+---
+
+## Arquitectura Técnica
+
+### Componentes:
 
 ```
-scripts_bd/
-└── bd_yapesito.sql ✅
+┌─────────────────┐     ┌─────────────────┐
+│  Cliente GUI    │     │ Cliente Yapesito│
+│  (Shibasito)    │     │   (Terminal)    │
+└────────┬────────┘     └────────┬────────┘
+         │                       │
+         ▼                       ▼
+┌────────────────────────────────────────┐
+│            RabbitMQ (RPC)              │
+│  client_requests_queue                 │
+│  yapesito_queue                        │
+│  shibasito_interbancaria_queue         │
+└───────┬────────────────────────┬───────┘
+        │                        │
+        ▼                        ▼
+┌───────────────┐        ┌──────────────┐
+│ ServidorCentral│        │ServidorYapesito│
+│  (Shibasito)  │◄──────►│  (Python)    │
+└───────┬───────┘        └──────┬───────┘
+        │                       │
+        ▼                       ▼
+┌───────────────┐        ┌─────────────┐
+│  PostgreSQL   │        │   SQLite    │
+│  (bd1_banco)  │        │ (yapesito)  │
+└───────────────┘        └─────────────┘
+```
 
-src/python/yapesito/
-├── __init__.py ✅
-├── servidor_yapesito.py ✅
-├── cliente_yapesito.py ✅
-└── db_yapesito.db (se crea automáticamente)
+---
 
-src/java/servidor_central/
-└── ServidorCentral.java (modificado) ✅
+## Estructura del Proyecto
 
-test_interbancaria.py (opcional) ✅
+```
+PC3/
+├── src/
+│   ├── java/
+│   │   ├── servidor_central/ServidorCentral.java
+│   │   └── nodo_trabajador/NodoWorker.java
+│   └── python/
+│       ├── cliente_desktop/
+│       │   ├── cliente_gui.py
+│       │   └── cliente_proxy.py
+│       ├── yapesito/
+│       │   ├── servidor_yapesito.py      # Servidor Yapesito
+│       │   └── cliente_yapesito.py       # Cliente terminal
+│       ├── common/
+│       │   ├── rpc_client.py
+│       │   └── proxy_client.py
+│       ├── nodo_reniec/reniec_worker.py
+│       └── nodo_trabajador/nodo_worker.py
+├── scripts_bd/
+│   ├── bd1_banco.sql                     # Shibasito (PostgreSQL)
+│   ├── bd2_reniec.sql                    # RENIEC (SQLite)
+│   └── bd_yapesito.sql                   # Yapesito (SQLite)
+└── README.md
 ```
 
 ---
